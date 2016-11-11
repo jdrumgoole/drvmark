@@ -130,7 +130,7 @@ func bulk_inserter( collection *mgo.Collection, threadNum int, numRecords int, b
 	bulker := collection.Bulk()
 	bulker.Unordered()
 	var rec bson.M
-	var total int
+	//var total int
 	
 	//fmt.Printf( "bulk_inserter called: %d\n", threadNum )
 	for i :=1 ; i <= numRecords ; i++ {
@@ -140,15 +140,15 @@ func bulk_inserter( collection *mgo.Collection, threadNum int, numRecords int, b
 		if ( i % batchSize ) == 0 {
 			_, err := bulker.Run()
 			check( err )
-			fmt.Printf( "Batch inserted: %d\n", i )
+			//fmt.Printf( "Batch inserted: %d\n", i )
 			bulker = collection.Bulk()
 		}
-		total = i 
+		//total = i 
 	}
 
 	_, err := bulker.Run()
 	check( err )
-	fmt.Printf( "Total Batch inserted : %d\n", total )
+	//fmt.Printf( "Total Batch inserted : %d\n", total )
 }
 
 func single_inserter( collection *mgo.Collection, threadNum int, count int ) {
@@ -226,8 +226,6 @@ func single_thread_test( session *mgo.Session, section string, numRecords int, t
 	
 	var elapsed time.Duration
 	
-	var totalElapsed time.Duration
-	
 	var key string
 	
 	//fmt.Printf( "Starting thread : %d\n", threadnum ) 
@@ -247,21 +245,18 @@ func single_thread_test( session *mgo.Session, section string, numRecords int, t
 	if section == "create" || section == "all" {
 		elapsed = create_records( collection, numRecords, threadnum, batch )
 		log_collection.log_max( elapsed, key )
-		totalElapsed = totalElapsed + elapsed
 	}
 	
 	if section == "read" || section == "all"  {
 		elapsed = read_records( collection, numRecords, threadnum, batch )
 		log_collection.log_max( elapsed, key )
-		totalElapsed = totalElapsed + elapsed 
 	}
 	
 	if section == "update" || section == "all" {
 		elapsed = update_records( collection, numRecords, threadnum, batch )
 		log_collection.log_max( elapsed, key )
-		totalElapsed = totalElapsed + elapsed
 	}
-	return totalElapsed
+	return elapsed
 }
 
 func multi_threaded_test( session *mgo.Session, section string, numRecords int, threadnum int, batch bool ) time.Duration {
@@ -322,25 +317,34 @@ func main() {
 	log_collection := make_log_collection( session )
 	log_collection.delete_entry()
 	
-	for _, section := range sections {
-		fmt.Printf( "Starting section : %s\n", section )
-		wg.Add( 1 )
-		st_time := single_thread_test( session, section, numRecords, 0,  batch ) 
-		wg.Wait()
-		log_collection.log_elapsed( st_time, "linear.total" ) 
-		
-		mt_time := multi_threaded_test( session, section, numRecords, threadnum, batch )
-		
-		log_collection.log_elapsed( mt_time, "parallel.total" )
-		
-		fmt.Printf( "ST Elapsed time: %s\n", st_time )
-		fmt.Printf( "MT Elapsed time: %s\n", mt_time )
+	var total_linear_elapsed time.Duration
+	var total_parallel_elapsed time.Duration
+	var st_time time.Duration
+	var mt_time time.Duration 
 	
-		total_duration := mt_time + st_time
+	for _, section := range sections {
 		
+		fmt.Printf( "Starting section (Linear): %s\n", section )
+		wg.Add( 1 )
+		st_time = single_thread_test( session, section, numRecords, 0,  batch ) 
+		wg.Wait()
+		total_linear_elapsed = total_linear_elapsed + st_time
+		fmt.Printf( "Ending section (Linear): %s, elapsed: %s\n", section, st_time )
 		
-		fmt.Printf( "Total elapsed time: %s seconds\n", total_duration )
-		fmt.Printf( "Ending section : %s\n", section )
 	}
+	log_collection.log_elapsed( total_linear_elapsed, "linear.total" )
+
+	
+	for _, section := range sections { 
+		fmt.Printf( "Starting section (parallel): %s\n", section )
+		mt_time = multi_threaded_test( session, section, numRecords, threadnum, batch )
+		log_collection.log_elapsed( mt_time, "parallel.total" )
+		total_parallel_elapsed = total_parallel_elapsed + st_time
+		fmt.Printf( "Ending section (parallel): %s elapsed: %s\n", section, mt_time )
+	}
+	log_collection.log_elapsed( total_parallel_elapsed, "parallel.total" )
+	
+	fmt.Printf( "Ending Total (Linear) elapsed: %s\n", total_linear_elapsed )
+	fmt.Printf( "Ending Total (parallel) elapsed: %s\n", total_parallel_elapsed )
 
 }

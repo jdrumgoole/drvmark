@@ -10,10 +10,13 @@ import "math"
 import "os"
 import "strconv"
 import "sync"
+//import "reflect"
 
 // Author : Joe.Drumgoole@mongodb.com
 
 var wg sync.WaitGroup
+
+const arrObjSize = 10
 	
 func check(e error) {
 	if e != nil {
@@ -33,21 +36,11 @@ type TestData struct {
 	section string
 }
 
-type ElapsedTime struct {
-	linear time.Duration
-	parallel time.Duration
-}
-
-type FileRecord struct {
-	ID        string "_id"
-	arr       []interface{}
-}
 
 func generate_record( threadNum int, recnum int ) bson.M {
 
 	// Definition of a 'Document'
 	topFields := 20 //20 top level fields
-	arrObjSize := 10 // 10 fields in each array object
 	arrSize := 20 // Array of 20 elements
 	//verbose := true
 	fldpfx  := "val"
@@ -100,14 +93,14 @@ func generate_record( threadNum int, recnum int ) bson.M {
 	return rec
 
 }
-
+	
 func bulk_inserter( collection *mgo.Collection, threadNum int, numRecords int, batchSize int ) {
 	bulker := collection.Bulk()
 	bulker.Unordered()
 	var rec bson.M
 	var total int
 	
-	fmt.Printf( "bulk_inserter called: %d\n", threadNum )
+	//fmt.Printf( "bulk_inserter called: %d\n", threadNum )
 	for i :=1 ; i <= numRecords ; i++ {
 		rec = generate_record( threadNum, i )
 		//fmt.Printf( "%d added %s\n", i, rec[ "_id" ] )
@@ -134,10 +127,72 @@ func single_inserter( collection *mgo.Collection, threadNum int, count int ) {
 	check( error )
 }
 
+func create_records( collection *mgo.Collection, numRecords int, threadnum int, batch bool ) time.Duration {
+	//fmt.Printf( "t.section: '%s'", t.section ) 
+	// Drop the test collection
+	
+	start := time.Now()
+	//fmt.Printf( "Dropping : %s\n", collection.Name ) 
+	collection.DropCollection()
+
+	if batch {
+		//fmt.Print( "Batch inserter\n" )
+		bulk_inserter( collection, threadnum, numRecords, 1000 )
+	} else {
+		//fmt.Print( "Single Inserter\n" )
+		for i :=1 ; i <= numRecords ; i++ {
+			single_inserter( collection, threadnum, i )
+		}
+	}
+	return time.Since( start )	
+}
+
+func update_records( collection *mgo.Collection, numRecords int, threadnum int, batch bool ) time.Duration {
+
+	start := time.Now()
+//	var result bson.M
+//	
+//	iterator := collection.Find( bson.M{}).Iter()
+//	
+//	for iterator.Next( &result ) {
+//		for k,v := range result {
+//			if ( k != "_id" )   { //&& ( string( reflect.TypeOf( v )) == "string" ) {
+//				v = string( v ) + " (modified)"
+//				result[ k ] = v
+//			}
+//		}
+//		collection.Update( bson.M{ "_id" : result[ "_id" ] }, result ) ;
+//	}
+	return time.Since( start )
+}
+
+func read_records( collection *mgo.Collection, numRecords int, threadnum int, batch bool ) time.Duration {
+	
+	start := time.Now()
+	iterator := collection.Find( bson.M{}).Iter()
+	var result interface{}
+	var sum float64
+
+	for iterator.Next( &result) {
+		doc := result.( bson.M  )
+		subArray := doc[ "arr" ].( []interface{} )
+		for _, v := range subArray {
+			doc := v.( bson.M )
+			sum = sum + doc["subval2"].(float64)
+		}
+	}
+	
+	return time.Since( start )
+}
+
 func single_thread_test( session *mgo.Session, section string, numRecords int, threadnum int, batch bool ) time.Duration {
 	
 	defer wg.Done()
 	defer fmt.Printf( "Finishing thread : %d\n", threadnum ) 
+	
+	var elapsed time.Duration
+	
+	var totalElapsed time.Duration
 	
 	fmt.Printf( "Starting thread : %d\n", threadnum ) 
 	
@@ -145,31 +200,22 @@ func single_thread_test( session *mgo.Session, section string, numRecords int, t
 	defer results.Close()
 	db := results.DB( "drvmark-go" )
 	collection_name := "records_" + strconv.Itoa( threadnum )
-	
-	test_collection := db.C( collection_name )
-
-
-	//fmt.Printf( "t.section: '%s'", t.section ) 
-	if  ( section == "create")  || ( section =="all" ) {
-		   // Drop the test collection
-		   fmt.Printf( "Dropping : %s:%s\n", db.Name, collection_name ) 
-		   test_collection.DropCollection()
-		   //check( error )  
+	collection := db.C( collection_name )
+	if section == "create" || section == "all" {
+		elapsed = create_records( collection, numRecords, threadnum, batch )
+		totalElapsed = totalElapsed + elapsed
 	}
 	
-	fmt.Printf( "Writing to %s:%s\n", db.Name, collection_name ) 
-
-	start := time.Now()
-	if batch {
-		fmt.Print( "Batch inserter\n" )
-		bulk_inserter( test_collection, threadnum, numRecords, 1000 )
-	} else {
-		fmt.Print( "Single Inserter\n" )
-		for i :=1 ; i <= numRecords ; i++ {
-			single_inserter( test_collection, threadnum, i )
-		}
+	if section == "read" || section == "all"  {
+		elapsed = read_records( collection, numRecords, threadnum, batch )
+		totalElapsed = totalElapsed + elapsed 
 	}
-	return time.Since( start )
+	
+	if section == "update" || section == "all" {
+		elapsed = update_records( collection, numRecords, threadnum, batch )
+		totalElapsed = totalElapsed + elapsed
+	}
+	return totalElapsed
 }
 
 func multi_threaded_test( session *mgo.Session, section string, numRecords int, threadnum int, batch bool ) time.Duration {
@@ -230,29 +276,31 @@ func main() {
 	session, err  := mgo.Dial( connection_string )
 	check(err)
 	defer session.Close()
-
-
 	
+	sections := []string{ "create", "read" } // missing update
 	session.SetMode(mgo.Monotonic, true)
 	threadnum := 4
 	resultsDB := session.DB("results") 
 	log_collection := resultsDB.C( "driver" )
 	log_collection.Remove(bson.M{"_id":language})
 	
-	wg.Add( 1 )
-	st_time := single_thread_test( session, "all", numRecords, 0,  batch ) 
-	wg.Wait()
-
+	for _, section := range sections {
+		fmt.Printf( "Starting section : %s\n", section )
+		wg.Add( 1 )
+		st_time := single_thread_test( session, section, numRecords, 0,  batch ) 
+		wg.Wait()
+		
+		mt_time := multi_threaded_test( session, section, numRecords/threadnum, threadnum, batch )
+		
+		fmt.Printf( "ST Elapsed time: %s\n", st_time )
+		fmt.Printf( "MT Elapsed time: %s\n", mt_time )
 	
-	mt_time := multi_threaded_test( session, "all", numRecords/threadnum, threadnum, batch )
-	
-	fmt.Printf( "ST Elapsed time: %s\n", st_time )
-	fmt.Printf( "MT Elapsed time: %s\n", mt_time )
-
-	total_duration := mt_time //+ st_time
-	
-	_, err = log_collection.Upsert( bson.M{"_id":language}, bson.M{ "$set" : bson.M{ "linear.time" : int64( total_duration )}} )
-	check( err ) 
-	fmt.Printf( "Toal elapsed time: %s seconds\n", total_duration )
+		total_duration := mt_time //+ st_time
+		
+		_, err = log_collection.Upsert( bson.M{"_id":language}, bson.M{ "$set" : bson.M{ "linear.time" : int64( total_duration )}} )
+		check( err ) 
+		fmt.Printf( "Total elapsed time: %s seconds\n", total_duration )
+		fmt.Printf( "Ending section : %s\n", section )
+	}
 
 }

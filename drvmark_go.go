@@ -188,13 +188,13 @@ func read_records( collection *mgo.Collection, numRecords int, threadnum int, ba
 func single_thread_test( session *mgo.Session, section string, numRecords int, threadnum int, batch bool ) time.Duration {
 	
 	defer wg.Done()
-	defer fmt.Printf( "Finishing thread : %d\n", threadnum ) 
+	//defer fmt.Printf( "Finishing thread : %d\n", threadnum ) 
 	
 	var elapsed time.Duration
 	
 	var totalElapsed time.Duration
 	
-	fmt.Printf( "Starting thread : %d\n", threadnum ) 
+	//fmt.Printf( "Starting thread : %d\n", threadnum ) 
 	
 	results := session.Copy()
 	defer results.Close()
@@ -222,9 +222,14 @@ func multi_threaded_test( session *mgo.Session, section string, numRecords int, 
 	
 	
 	start :=time.Now()
+	remainder := numRecords % threadnum
+	chunk := numRecords / threadnum
 	for i:=1 ; i <=  threadnum ; i++ {
 		wg.Add( 1 )
-		go single_thread_test( session, section, numRecords, i, batch ) 
+		if ( i == threadnum ) {
+			chunk = chunk + remainder
+		}
+		go single_thread_test( session, section, chunk, i, batch ) 
 	}
 	wg.Wait()
 	
@@ -290,7 +295,7 @@ func main() {
 		st_time := single_thread_test( session, section, numRecords, 0,  batch ) 
 		wg.Wait()
 		
-		mt_time := multi_threaded_test( session, section, numRecords/threadnum, threadnum, batch )
+		mt_time := multi_threaded_test( session, section, numRecords, threadnum, batch )
 		
 		fmt.Printf( "ST Elapsed time: %s\n", st_time )
 		fmt.Printf( "MT Elapsed time: %s\n", mt_time )
